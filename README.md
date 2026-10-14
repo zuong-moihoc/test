@@ -15,7 +15,7 @@ ASP.NET Core Web API (.NET 10) theo kiến trúc 4 lớp của nhóm. Bước n�
 - Clone repository và lấy nhánh có thay đổi OpenAPI/Swagger. Nếu thay đổi còn nằm ở nhánh `feature/swagger-openAPI`, cần checkout nhánh đó sau khi nó đã được push; nếu đã merge vào `test`, checkout `test` và pull code mới.
 - Mở terminal tại thư mục chứa `LegacyVault.sln` và `docker-compose.yml`. Các lệnh dưới đây dùng PowerShell.
 
-Source đã có migration `InitialCreate` trong `src/LegacyVault.Infrastructure/Persistence/Migrations`. Khi lấy code lần đầu, **không tạo lại `InitialCreate`**. API tự áp dụng các migration chưa chạy khi khởi động ở Development.
+Source đã có migration `InitialCreate` trong `src/LegacyVault.Infrastructure/Data/Migrations`. Khi lấy code lần đầu, **không tạo lại `InitialCreate`**. API tự áp dụng các migration chưa chạy khi khởi động ở Development.
 
 ### 1.2. Khởi động SQL Server Docker
 
@@ -44,7 +44,17 @@ dotnet restore
 dotnet build
 ```
 
-Khóa JWT được lưu trong user-secrets trên máy bạn, không nằm trong source Git. Mỗi bạn tự cấu hình khóa này một lần; không cần tạo lại mỗi lần chạy project. Cấu hình database Development đã nằm trong `src/LegacyVault.Api/appsettings.Development.json` và khớp Docker Compose.
+Khóa JWT được lưu trong user-secrets trên máy bạn, không nằm trong source Git. Mỗi bạn tự cấu hình khóa này một lần; không cần tạo lại mỗi lần chạy project.
+
+Từ khi có module Kho/Tài sản, API cần thêm **khóa chủ mã hóa tài sản (KEK)** — 32 byte ngẫu nhiên, Base64. Thiếu khóa này API dừng ngay khi khởi động:
+
+```powershell
+$kek = New-Object byte[] 32
+[Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($kek)
+dotnet user-secrets set "Encryption:Keys:kek-2026-10" ([Convert]::ToBase64String($kek)) --project src/LegacyVault.Api
+```
+
+`kek-2026-10` phải trùng `Encryption:ActiveKeyId` trong `appsettings.json`. **Không đổi hoặc xóa khóa này** khi DB đã có tài sản: mất KEK = mọi tệp đã mã hóa không mở lại được (SEC-07). Bản mã được lưu ở `src/LegacyVault.Api/App_Data/asset-blobs/` (đã nằm trong `.gitignore`). Cấu hình database Development đã nằm trong `src/LegacyVault.Api/appsettings.Development.json` và khớp Docker Compose.
 
 ### 1.4. Chạy API bằng Visual Studio hoặc terminal
 
@@ -63,13 +73,16 @@ dotnet run --project src/LegacyVault.Api --launch-profile http
 
 Chọn một cách chạy để tránh trùng cổng API `5000`. Khi terminal hiện `Now listening on: http://localhost:5000`, ứng dụng đã sẵn sàng. Visual Studio tự mở Swagger khi chạy profile `http`.
 
-Ở Development, API tự tạo database `LegacyVault` nếu chưa có, áp dụng migration và thêm 3 tài khoản demo khi bảng `Users` chưa có dữ liệu. Mật khẩu chung là `Password123!`:
+Ở Development, API tự tạo database `LegacyVault` nếu chưa có, áp dụng migration và thêm 4 tài khoản demo khi bảng `Users` chưa có dữ liệu. Mật khẩu chung là `Password123!`:
 
 | Email | Role | Ghi chú |
 | --- | --- | --- |
-| `owner@legacyvault.local` | OWNER | Tài khoản thường |
+| `owner@legacyvault.local` | OWNER | Tài khoản thường, email đã xác minh |
 | `admin@legacyvault.local` | ADMIN | Tài khoản quản trị |
 | `inactive@legacyvault.local` | OWNER | Bị vô hiệu; đăng nhập nhận 403 |
+| `unverified@legacyvault.local` | OWNER | Đăng nhập được nhưng email chưa xác minh; tạo kho nhận 403 `EMAIL_NOT_VERIFIED` |
+
+Database đã có dữ liệu từ trước sẽ không được thêm tài khoản `unverified`. Muốn có đủ 4 tài khoản thì xóa database Development rồi chạy lại API.
 
 ### 1.5. Kết nối database bằng SSMS
 
@@ -152,7 +165,7 @@ dotnet tool install --global dotnet-ef --version 10.0.0
 Ví dụ tạo migration cho một thay đổi mới (đổi `AddNewFeature` thành tên phù hợp):
 
 ```powershell
-dotnet ef migrations add AddNewFeature --project src/LegacyVault.Infrastructure --startup-project src/LegacyVault.Api --output-dir Persistence/Migrations
+dotnet ef migrations add AddNewFeature --project src/LegacyVault.Infrastructure --startup-project src/LegacyVault.Api --output-dir Data/Migrations
 ```
 
 Commit các file migration và model snapshot cùng thay đổi entity. Các thành viên khác pull migration đã tạo, rồi chạy API Development để áp dụng; không tạo lại migration cùng tên trên mỗi máy.
@@ -173,28 +186,38 @@ Commit các file migration và model snapshot cùng thay đổi entity. Các th�
 
 ## 2. Cấu trúc
 
+Code tổ chức theo mạch quen thuộc của Spring Boot: **Controller → Service → Repository → Entity**.
+
 ```
 legacyvault-be/
 ├── Directory.Build.props        Cấu hình chung cho mọi project (.NET 10, nullable)
 ├── Directory.Packages.props     Version NuGet khai báo một chỗ
 ├── docker-compose.yml           SQL Server cho dev
-├── http/auth.http               Kịch bản thử API bằng tay
+├── http/                        auth.http, vaults.http: kịch bản thử API bằng tay
+├── docs/HUONG-DAN-DOC-CODE.md   Hướng dẫn đọc code cho người mới
 └── src/
-    ├── LegacyVault.Domain/              ① LÕI — không phụ thuộc gì
-    │   ├── Common/                      Entity, Result, Error
-    │   └── Identity/                    User, RefreshToken, UserRole, UserStatus
-    ├── LegacyVault.Application/         ② USE CASE — chỉ biết Domain + interface
-    │   ├── Common/Interfaces/           IAppDbContext, IPasswordHasher, ITokenService, ICurrentUser
-    │   ├── Features/Identity/           AuthService, AuthDtos, AuthErrors
-    │   └── DependencyInjection.cs
+    ├── LegacyVault.Domain/              ① ENTITY — không phụ thuộc gì
+    │   ├── Entities/                    User, RefreshToken, Vault, HandoverPlan, VaultEntitlement,
+    │   │                                Asset, AssetVersion                   (≈ @Entity)
+    │   └── Enums/                       UserRole, UserStatus, VaultStatus, PlanStatus, ServiceTier, ...
+    ├── LegacyVault.Application/         ② NGHIỆP VỤ — chỉ biết Domain + interface
+    │   ├── Services/                    AuthService, VaultService, AssetService (≈ @Service)
+    │   ├── Repositories/                IUserRepository, IVaultRepository, ... (≈ JpaRepository)
+    │   ├── Security/                    IPasswordHasher, ITokenService, ICurrentUser
+    │   ├── Dtos/Requests/               LoginRequest, LogoutRequest
+    │   ├── Dtos/Responses/              UserResponse, AuthSessionResponse, CurrentSessionResponse, AuthResult
+    │   ├── Exceptions/                  ApiException + InvalidCredentials/AccountLocked/AccountNotActive/SessionExpired
+    │   └── ApplicationConfig.cs         Đăng ký service
     ├── LegacyVault.Infrastructure/      ③ CÀI ĐẶT THẬT cho các interface
-    │   ├── Persistence/                 AppDbContext, Configurations/, DbInitializer
-    │   ├── Security/                    Argon2PasswordHasher, JwtTokenService, CurrentUser
-    │   └── DependencyInjection.cs       Đăng ký DB, JWT
+    │   ├── Repositories/                UserRepository, RefreshTokenRepository (EF Core)
+    │   ├── Data/                        AppDbContext, DbSeeder, Configurations/, Migrations/
+    │   ├── Security/                    Argon2PasswordHasher, JwtTokenService, CurrentUser, JwtSettings
+    │   └── InfrastructureConfig.cs      Đăng ký DB, repository, JWT  (≈ @Configuration)
     └── LegacyVault.Api/                 ④ HTTP — controller mỏng, lắp ráp mọi thứ
-        ├── Common/                      ApiControllerBase, ApiResponse, AuthCookieWriter, GlobalExceptionHandler
-        ├── Controllers/V1/              AuthController
-        ├── Extensions/                  Controller, CORS, chuẩn lỗi
+        ├── Controllers/                 AuthController                        (≈ @RestController)
+        ├── Exceptions/                  ApiExceptionFilter (≈ @ControllerAdvice), GlobalExceptionHandler (lỗi 500)
+        ├── Config/                      ApiConfig (controller, lỗi validate), CorsConfig
+        ├── Helpers/                     ApiResponse, AuthCookieWriter
         └── Program.cs
 ```
 
@@ -207,12 +230,14 @@ Api ──► Application ──► Domain
 ```
 
 Quy tắc duy nhất cần nhớ: **lớp trong không bao giờ biết lớp ngoài.**
-- Domain không biết có database hay HTTP. `User.RegisterFailedLogin()` chỉ là C# thuần — test được không cần gì.
-- Application cần lưu dữ liệu nhưng chỉ biết `IAppDbContext` (interface). Không biết đó là SQL Server.
-- Infrastructure cài đặt interface đó bằng EF Core + SQL Server. Đổi sang PostgreSQL chỉ sửa ở đây.
+- Domain chỉ chứa entity (thuộc tính get/set) và enum, không biết có database hay HTTP.
+- Application chứa luật nghiệp vụ (`AuthService`) và chỉ biết **interface** repository. Không biết đó là SQL Server.
+- Infrastructure cài đặt các interface đó bằng EF Core + SQL Server. Đổi sang PostgreSQL chỉ sửa ở đây.
 - Api là nơi duy nhất "lắp" mọi thứ lại (`Program.cs`).
 
-Muốn biết một dòng code nên đặt ở đâu? Hỏi: *"Nó là luật nghiệp vụ, là điều phối, là chi tiết kỹ thuật, hay là chuyện HTTP?"* → Domain / Application / Infrastructure / Api.
+Quy ước code để người quen Java đọc dễ: constructor gán vào field `private readonly` (không dùng primary constructor), mỗi class một file, DTO là `class` có `{ get; set; }`, kiểm tra null bằng `if (x == null)`.
+
+Muốn biết một dòng code nên đặt ở đâu? Hỏi: *"Nó là dữ liệu, là luật nghiệp vụ, là chi tiết kỹ thuật (DB, JWT), hay là chuyện HTTP?"* → Domain / Application / Infrastructure / Api.
 
 ---
 
@@ -229,26 +254,34 @@ FE: POST /api/v1/auth/login { email, password, rememberMe }
  │                             trong LoginRequest. Sai → 400 VALIDATION_ERROR, không vào tới đây.
  │
  ├─ AuthService.LoginAsync
- │    1. Tìm user theo email đã chuẩn hóa          (EF → SELECT … WHERE Email = @p)
- │    2. Hỏi entity: user.IsLockedOut(now)?       → 423 ACCOUNT_LOCKED
- │    3. passwordHasher.Verify(...)  sai?         → user.RegisterFailedLogin(now) → 401 + attemptsRemaining
- │    4. user.Status != Active?                    → 403 ACCOUNT_NOT_ACTIVE
- │    5. user.RegisterSuccessfulLogin(now)
+ │    1. userRepository.FindByEmailAsync(email)    (EF → SELECT … WHERE Email = @p)
+ │    2. IsLockedOut(user, now)?                   → throw AccountLockedException      (423)
+ │    3. passwordHasher.Verify(...) sai?           → RegisterFailedLogin(user, now)
+ │                                                 → throw InvalidCredentialsException (401 + attemptsRemaining)
+ │    4. user.Status != Active?                    → throw AccountNotActiveException   (403)
+ │    5. RegisterSuccessfulLogin(user, now)
  │    6. Tạo access token (JWT 15') + refresh token (7 ngày, lưu HASH vào DB)
- │    7. SaveChangesAsync() — MỘT lần cho mọi thay đổi
- │    → trả Result<AuthResult>
+ │    7. userRepository.SaveChangesAsync() — MỘT lần cho mọi thay đổi
+ │    → trả AuthResult
  │
- ├─ AuthController ........... Thất bại → Fail(error) → ProblemDetails
- │                             Thành công → AuthCookieWriter ghi 2 cookie HttpOnly
+ ├─ (nếu có exception) ApiExceptionFilter → JSON lỗi { status, title, code, ... }
+ │
+ ├─ AuthController ........... AuthCookieWriter ghi 2 cookie HttpOnly
  │
  └─ Response 200 { "data": { userId, expiresIn, user } } + Set-Cookie: lv_access, lv_refresh
 ```
 
-Các request sau đó: trình duyệt tự gửi cookie `lv_access` → JwtBearer (cấu hình ở `Infrastructure/DependencyInjection.cs`) đọc cookie, kiểm tra chữ ký + hạn → điền `HttpContext.User` → `CurrentUser.UserId` đọc ra.
+Các request sau đó: trình duyệt tự gửi cookie `lv_access` → JwtBearer (cấu hình ở `Infrastructure/InfrastructureConfig.cs`) đọc cookie, kiểm tra chữ ký + hạn → điền `HttpContext.User` → `CurrentUser.UserId` đọc ra.
 
-### Vì sao trả `Result` thay vì `throw`?
+### Lỗi nghiệp vụ được xử lý thế nào?
 
-Sai mật khẩu là chuyện **bình thường**, xảy ra hàng ngày. Exception dành cho chuyện **bất thường** (mất kết nối DB). `Result` buộc người gọi xử lý cả hai nhánh, và chữ ký method nói rõ "có thể thất bại". Exception thật sự bất ngờ thì `GlobalExceptionHandler` bắt hết và trả 500.
+Giống Spring Boot: service **throw** exception, một chỗ chung đổi exception thành JSON.
+
+1. Mỗi loại lỗi là một class con của `ApiException` (thư mục `Application/Exceptions/`), mang sẵn HTTP status, `code` và message. Ví dụ `throw new InvalidCredentialsException(attemptsRemaining)`.
+2. `ApiExceptionFilter` (≈ `@ControllerAdvice`) bắt mọi `ApiException` và trả `{ "status": 401, "title": "...", "code": "INVALID_CREDENTIALS", "attemptsRemaining": 3, "traceId": "..." }`. Controller không cần `if/else` kiểm tra lỗi.
+3. Exception khác (bug, mất kết nối DB) đi tiếp tới `GlobalExceptionHandler`: ghi log đầy đủ và trả 500 `INTERNAL_ERROR`, không lộ stack trace.
+
+Vì sao `ApiException` dùng filter mà không để `GlobalExceptionHandler` xử lý luôn? `GlobalExceptionHandler` là middleware chạy sau khi MVC bỏ cuộc và nó xóa hết header của response, kể cả lệnh xóa cookie mà `AuthController.Refresh` vừa ghi. Filter chạy bên trong MVC nên giữ nguyên các header đó.
 
 ---
 
@@ -292,6 +325,31 @@ Thành công: `{ "data": … }`. Lỗi: ProblemDetails có `code`.
 | 401 | `SESSION_EXPIRED` | Refresh token hết hạn/bị thu hồi | |
 | 500 | `INTERNAL_ERROR` | Lỗi bất ngờ (xem log theo `traceId`) | |
 
+### Kho và tài sản (chỉ role `OWNER`)
+
+Theo SRS v3.14.1: **mỗi Owner có đúng một kho** (SETUP-12), kể cả khi kho đã đóng. Kho mới luôn là `status: OPEN`, `planStatus: DRAFT`, `serviceTier: FREE`, `storageQuotaBytes: 20971520` (20 MiB). Thanh toán và kích hoạt kế hoạch làm sau, trên cùng kho này.
+
+| Method | URL | Kết quả |
+| --- | --- | --- |
+| POST | `/api/v1/vaults` | Nút "Tạo kho của tôi", body tùy chọn `{ name?, description? }`. **201** khi vừa tạo; **200** khi đã có kho (trả lại kho cũ, bỏ qua body). Gọi lặp hay song song vẫn chỉ có một kho |
+| GET | `/api/v1/vaults/me` | 200 kho của tôi / 404 `VAULT_NOT_FOUND` nếu chưa tạo |
+| GET | `/api/v1/vaults/{vaultId}` | 200 một kho |
+| POST | `/api/v1/vaults/{vaultId}/assets` | 201, `multipart/form-data`: `name`, `description?`, `file` |
+| GET | `/api/v1/vaults/{vaultId}/assets` | 200 metadata tài sản (không có nội dung) |
+| GET | `/api/v1/vaults/{vaultId}/assets/{assetId}/content` | 200 tệp đã giải mã, header `X-Content-SHA256` |
+
+| HTTP | `code` | Khi nào | Trường thêm |
+| --- | --- | --- | --- |
+| 403 | `EMAIL_NOT_VERIFIED` | Tạo kho khi email chưa xác minh (AC-01) | |
+| 404 | `VAULT_NOT_FOUND` / `ASSET_NOT_FOUND` | Không có, hoặc kho của người khác | |
+| 409 | `VAULT_NOT_EDITABLE` | Không được thêm nội dung | `reason`: `VAULT_CLOSED` / `PLAN_LOCKED` (đang xét chứng tử/bàn giao) / `SERVICE_READ_ONLY` (đang ân hạn) |
+| 409 | `STORAGE_QUOTA_EXCEEDED` | Tệp mới làm vượt dung lượng của hạng dịch vụ | `usedBytes`, `quotaBytes` |
+| 409 | `ASSET_LIMIT_EXCEEDED` | Đủ 2.000 tài sản, giới hạn chống lạm dụng (NFR-14) | `maxAssets` |
+| 400 | `INVALID_ASSET_FILE` | Rỗng, > 20 MiB, sai loại, nội dung không khớp đuôi | `reason` |
+| 500 | `ASSET_INTEGRITY_FAILED` | Bản mã/khóa bị sửa hoặc KEK sai — sự cố, có ghi log | |
+
+Mỗi phiên bản tệp được mã hóa phong bì AES-256-GCM: khóa dữ liệu riêng cho từng phiên bản, bọc bằng KEK nằm ngoài DB. Xem `AssetService` và `AesGcmEnvelopeEncryptionService`.
+
 ### Ghi chú cho FE
 
 1. `AuthSession` trong `auth.types.ts` khai báo `accessToken`, `refreshToken` bắt buộc — BE cố ý không trả hai trường này (đã nằm trong cookie). Nên đổi thành tùy chọn hoặc xóa.
@@ -305,15 +363,15 @@ Thành công: `{ "data": … }`. Lỗi: ProblemDetails có `code`.
 Mỗi tính năng mới đi đúng 6 bước (giống mục 7 tài liệu kiến trúc). Thử tự làm theo thứ tự, mỗi bài dựa trên bài trước:
 
 **Bài 1 — Đăng ký (`POST /api/v1/auth/register`)**
-FE đã có `RegisterRequest`. Gợi ý: thêm `RegisterRequest` vào `AuthDtos.cs` (kèm `[Compare]` cho `confirmPassword`), thêm `AuthErrors.EmailAlreadyExists` (409), thêm `RegisterAsync` vào `AuthService` dùng `User.Create(..., UserStatus.Pending, ...)`. Không cần migration mới vì bảng không đổi. Câu hỏi để tự nghĩ: nếu hai người đăng ký cùng email cùng lúc, cái gì chặn lại? (Gợi ý: xem `UserConfiguration`.)
+FE đã có `RegisterRequest`. Gợi ý: tạo `Dtos/Requests/RegisterRequest.cs` (kèm `[Compare]` cho `confirmPassword`), tạo `Exceptions/EmailAlreadyExistsException.cs` (409), thêm `RegisterAsync` vào `IAuthService`/`AuthService`: kiểm tra `userRepository.FindByEmailAsync`, tạo `new User { ..., Status = UserStatus.Pending }`, thêm method `Add(User)` vào `IUserRepository`/`UserRepository`. Không cần migration mới vì bảng không đổi. Câu hỏi để tự nghĩ: nếu hai người đăng ký cùng email cùng lúc, cái gì chặn lại? (Gợi ý: xem `UserConfiguration`.)
 
-**Bài 2 — Unit test cho Domain**
-Tạo project `tests/LegacyVault.UnitTests` (xUnit), viết test cho `User.RegisterFailedLogin`: sai 4 lần còn 1 lượt; lần 5 bị khóa; sau 15 phút được thử lại. Domain không phụ thuộc gì nên test chỉ là `new` và `Assert`.
+**Bài 2 — Unit test cho AuthService**
+Tạo project `tests/LegacyVault.UnitTests` (xUnit), viết test cho luật khóa tài khoản qua `AuthService.LoginAsync`: sai 4 lần còn 1 lượt; lần 5 bị khóa; sau 15 phút được thử lại. Vì service chỉ phụ thuộc interface, test tự viết class giả cho `IUserRepository`, `IRefreshTokenRepository`, `IPasswordHasher`… và dùng `FakeTimeProvider` để "tua" thời gian.
 
 **Bài 3 — Phân quyền theo role**
-Tạo `AdminController` với một endpoint `[Authorize(Roles = "ADMIN")]`. Đăng nhập bằng owner → 403; bằng admin → 200. Đọc lại `RoleClaimType` trong `Infrastructure/DependencyInjection.cs` để hiểu vì sao nó chạy.
+Tạo `AdminController` với một endpoint `[Authorize(Roles = "ADMIN")]`. Đăng nhập bằng owner → 403; bằng admin → 200. Đọc lại `RoleClaimType` trong `Infrastructure/InfrastructureConfig.cs` để hiểu vì sao nó chạy.
 
 **Bài 4 — Module đầu tiên có bảng mới**
-Đây là lúc đi đủ 6 bước, kể cả `dotnet ef migrations add`: entity trong `Domain/<Module>/`, `<X>Configuration.cs`, thêm `DbSet` vào `IAppDbContext` và `AppDbContext`, service + DTO + errors, controller, migration.
+Đây là lúc đi đủ 6 bước, kể cả `dotnet ef migrations add`: entity trong `Domain/Entities/`, `Data/Configurations/<X>Configuration.cs`, thêm `DbSet` vào `AppDbContext`, interface + class repository, service + DTO + exception, controller, migration.
 
 Các phần còn lại của bảo mật (TOTP cho Admin, đăng nhập Google, rate limit) làm sau khi đã quen khuôn.
