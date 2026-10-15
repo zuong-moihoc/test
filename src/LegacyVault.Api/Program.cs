@@ -1,51 +1,45 @@
-using LegacyVault.Api.Extensions;
+using LegacyVault.Api.Config;
 using LegacyVault.Application;
 using LegacyVault.Infrastructure;
-using LegacyVault.Infrastructure.Persistence;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ===== 1. Đăng ký service vào DI container (theo từng lớp) =====
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
-builder.Services.AddApiServices(builder.Configuration);
-builder.Services.AddOpenApi();
+builder.Services.AddApiConfig();
+builder.Services.AddCorsConfig(builder.Configuration);
 
 var app = builder.Build();
 
-// ===== 2. Pipeline middleware: THỨ TỰ RẤT QUAN TRỌNG, request đi qua từ trên xuống =====
-app.UseExceptionHandler();   // bọc ngoài cùng để bắt lỗi của mọi middleware phía sau
-app.UseStatusCodePages();    // 401/403/404 rỗng → tự thành ProblemDetails JSON
+app.UseExceptionHandler();
+app.UseStatusCodePages();
 
-// Tài liệu và giao diện thử API chỉ bật trong môi trường Development.
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
     app.UseSwaggerUI(options =>
-    {
-        options.SwaggerEndpoint("/openapi/v1.json", "LegacyVault API v1");
-    });
+        options.SwaggerEndpoint("/openapi/v1.json", "LegacyVault API v1"));
 }
-
-if (!app.Environment.IsDevelopment())
+else
 {
     app.UseHsts();
     app.UseHttpsRedirection();
 }
 
-app.UseCors(ApiServiceExtensions.FrontendCorsPolicy); // trước Authentication để preflight OPTIONS không bị 401
-app.UseAuthentication();     // đọc cookie/JWT → điền HttpContext.User
-app.UseAuthorization();      // kiểm tra [Authorize]
-
+app.UseCors(CorsConfig.FrontendPolicy);
+app.UseAuthentication();
+app.UseAuthorization();
 app.MapControllers();
 
-// ===== 3. Chuẩn bị DB cho môi trường dev =====
-if (app.Environment.IsDevelopment())
+// Liveness không phụ thuộc SQL; readiness chỉ đạt khi kết nối được database.
+app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false });
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
 {
-    await app.Services.InitializeDatabaseAsync();
-}
+    Predicate = check => check.Tags.Contains("ready")
+});
 
+// Không tự migrate/seed lúc khởi động. Docker Compose tạo database dev trống.
 app.Run();
 
-// Để sau này project test tích hợp (WebApplicationFactory<Program>) truy cập được.
 public partial class Program;

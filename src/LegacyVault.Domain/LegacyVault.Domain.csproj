@@ -1,3 +1,1 @@
-<Project Sdk="Microsoft.NET.Sdk">
-  <!-- Domain KHÔNG tham chiếu project hay package nào. Đây là lõi, mọi thứ khác phụ thuộc vào nó. -->
-</Project>
+<Project Sdk="Microsoft.NET.Sdk" />

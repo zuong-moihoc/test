@@ -1,7 +1,19 @@
-bin/
-obj/
+**/bin/
+**/obj/
 .vs/
 .idea/
 *.user
 *.suo
-appsettings.*.local.json
+.env
+.env.*
+**/appsettings.*.local.json
+TestResults/
+**/TestResults/
+artifacts/
+*.log
+*.bak
+*.mdf
+*.ldf
+
+# Nội dung tài sản lưu local khi dev
+**/App_Data/

@@ -1,20 +1,54 @@
 using System.Security.Claims;
-using LegacyVault.Application.Common.Interfaces;
+using LegacyVault.Application.Security;
 using Microsoft.AspNetCore.Http;
 using Microsoft.IdentityModel.JsonWebTokens;
 
 namespace LegacyVault.Infrastructure.Security;
 
-/// <summary>
-/// Đọc người dùng hiện tại từ HttpContext.User — thứ mà middleware JwtBearer đã điền
-/// sau khi kiểm tra chữ ký và hạn của token.
-/// </summary>
-public sealed class CurrentUser(IHttpContextAccessor httpContextAccessor) : ICurrentUser
+public sealed class CurrentUser : ICurrentUser
 {
-    private ClaimsPrincipal? Principal => httpContextAccessor.HttpContext?.User;
+    private readonly IHttpContextAccessor _httpContextAccessor;
 
-    public bool IsAuthenticated => Principal?.Identity?.IsAuthenticated ?? false;
+    public CurrentUser(IHttpContextAccessor httpContextAccessor)
+    {
+        _httpContextAccessor = httpContextAccessor;
+    }
 
-    public Guid? UserId =>
-        Guid.TryParse(Principal?.FindFirstValue(JwtRegisteredClaimNames.Sub), out var id) ? id : null;
+    public bool IsAuthenticated
+    {
+        get
+        {
+            var principal = GetPrincipal();
+            return principal != null
+                && principal.Identity != null
+                && principal.Identity.IsAuthenticated;
+        }
+    }
+
+    public Guid? UserId
+    {
+        get
+        {
+            var principal = GetPrincipal();
+            if (principal == null)
+            {
+                return null;
+            }
+
+            var sub = principal.FindFirstValue(JwtRegisteredClaimNames.Sub)
+                ?? principal.FindFirstValue(ClaimTypes.NameIdentifier);
+
+            if (Guid.TryParse(sub, out var id))
+            {
+                return id;
+            }
+
+            return null;
+        }
+    }
+
+    private ClaimsPrincipal? GetPrincipal()
+    {
+        return _httpContextAccessor.HttpContext?.User;
+    }
 }

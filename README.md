@@ -1,319 +1,234 @@
-# LegacyVault Backend — Bước 1: Đăng nhập / Đăng xuất
+# LegacyVault Backend — bộ khung khởi tạo
 
-ASP.NET Core Web API (.NET 10) theo kiến trúc 4 lớp của nhóm. Bước này chỉ làm **xác thực**: đăng nhập, xem phiên, làm mới phiên, đăng xuất. Các module khác (Vaults, Assets, …) sẽ thêm dần theo đúng khuôn này.
+Cấu trúc giữ bốn project của nhóm: **Api, Application, Domain, Infrastructure**. Khi có chức năng, luồng xử lý là **Controller → Service → Repository → Database**.
 
-Đọc theo thứ tự: chạy được trước (mục 1) → hiểu cấu trúc (mục 2) → lần theo một request (mục 3) → tự làm bài tập (mục 6).
+**Docker chỉ chạy SQL Server. API chạy bằng Visual Studio hoặc .NET trên máy.** Chưa có auth, tài khoản demo hoặc bảng nghiệp vụ.
 
----
+## 1. Chạy SQL bằng một lệnh
 
-## 1. Cài lần đầu, kết nối database và chạy API
-
-### 1.1. Chuẩn bị trên mỗi máy
-
-- Cài [.NET 10 SDK](https://dotnet.microsoft.com/download), Git và Docker Desktop.
-- Mở Docker Desktop, đợi Docker Engine sẵn sàng.
-- Clone repository và lấy nhánh có thay đổi OpenAPI/Swagger. Nếu thay đổi còn nằm ở nhánh `feature/swagger-openAPI`, cần checkout nhánh đó sau khi nó đã được push; nếu đã merge vào `test`, checkout `test` và pull code mới.
-- Mở terminal tại thư mục chứa `LegacyVault.sln` và `docker-compose.yml`. Các lệnh dưới đây dùng PowerShell.
-
-Source đã có migration `InitialCreate` trong `src/LegacyVault.Infrastructure/Persistence/Migrations`. Khi lấy code lần đầu, **không tạo lại `InitialCreate`**. API tự áp dụng các migration chưa chạy khi khởi động ở Development.
-
-### 1.2. Khởi động SQL Server Docker
+Cài [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/), mở Docker và chờ Linux Engine sẵn sàng. Lấy source về, mở terminal tại thư mục chứa `docker-compose.yml`, chạy:
 
 ```powershell
-docker compose up -d
+docker compose up -d --wait
+```
+
+Docker tự tải image nếu cần, khởi động SQL Server và tạo database `LegacyVault` trống nếu chưa có. Lệnh đợi tới khi kết nối được database. **Không cần tạo .env, đặt mật khẩu hoặc chạy script setup.** Lần đầu tải image/khởi động có thể mất vài phút.
+
+```powershell
 docker compose ps
-docker compose logs --tail 30 sqlserver
 ```
 
-Lần đầu Docker tải image SQL Server, nên có thể mất vài phút. Kiểm tra container `legacyvault-sql` có trạng thái `Up` và log có dòng `SQL Server is now ready for client connections` trước khi chạy API.
+Service `sqlserver` báo `healthy` là database sẵn sàng. Mỗi thành viên có database local riêng dù dùng cùng thông tin kết nối mẫu.
 
-Cấu hình cổng trong `docker-compose.yml` là `14330:1433`:
+## 2. Kết nối bằng SSMS
 
-- API hoặc SSMS chạy trên máy kết nối tới `127.0.0.1,14330`.
-- SQL Server bên trong container vẫn dùng cổng `1433`.
-- Chọn cổng máy `14330` để tránh trùng SQL Server Express thường dùng cổng `1433`.
-- Nếu sau này API cũng chạy trong container cùng mạng Compose, địa chỉ SQL Server là `sqlserver,1433`.
+| Trường | Giá trị |
+|---|---|
+| Server name | `127.0.0.1,14331` |
+| Authentication | SQL Server Authentication |
+| Login | `sa` |
+| Password | `LegacyVault12345!` |
+| Database | `LegacyVault` |
+| Encrypt | Bật |
+| Trust server certificate | Bật cho môi trường local |
 
-### 1.3. Tạo khóa JWT và build (lần đầu trên mỗi máy)
+SSMS là công cụ tùy chọn; không cần cài SQL Server riêng trên Windows. Database chưa có bảng nghiệp vụ là đúng phạm vi bộ khung.
 
-```powershell
-$jwtDevKey = [guid]::NewGuid().ToString("N") + [guid]::NewGuid().ToString("N")
-dotnet user-secrets set "Jwt:SigningKey" $jwtDevKey --project src/LegacyVault.Api
+Mật khẩu này là **mẫu development công khai**, chỉ dùng trên máy local. SQL chỉ mở cổng tại `127.0.0.1`. Server triển khai phải dùng cấu hình/bí mật riêng.
 
-dotnet restore
-dotnet build
-```
+## 3. Chạy API
 
-Khóa JWT được lưu trong user-secrets trên máy bạn, không nằm trong source Git. Mỗi bạn tự cấu hình khóa này một lần; không cần tạo lại mỗi lần chạy project. Cấu hình database Development đã nằm trong `src/LegacyVault.Api/appsettings.Development.json` và khớp Docker Compose.
+Chỉ chạy SQL thì cần Docker. Để chạy/code API cần thêm [.NET SDK](https://dotnet.microsoft.com/download/dotnet/10.0) theo `global.json` (dòng **10.0.400**, chấp nhận patch mới hơn trong cùng feature band), Visual Studio hỗ trợ SDK này với workload ASP.NET hoặc VS Code/terminal. Git dùng để clone/pull/push.
 
-### 1.4. Chạy API bằng Visual Studio hoặc terminal
+**Visual Studio:** mở `LegacyVault.sln` → chọn `LegacyVault.Api` làm Startup Project → chọn profile **http** → F5 hoặc Ctrl+F5.
 
-Trong Visual Studio:
-
-1. Mở `LegacyVault.sln`.
-2. Chuột phải `LegacyVault.Api` → **Set as Startup Project**.
-3. Chọn profile **http** trên thanh chạy.
-4. Bấm **F5** (debug) hoặc **Ctrl + F5** (chạy bình thường).
-
-Hoặc chạy bằng PowerShell tại thư mục gốc:
+**Terminal:**
 
 ```powershell
 dotnet run --project src/LegacyVault.Api --launch-profile http
 ```
 
-Chọn một cách chạy để tránh trùng cổng API `5000`. Khi terminal hiện `Now listening on: http://localhost:5000`, ứng dụng đã sẵn sàng. Visual Studio tự mở Swagger khi chạy profile `http`.
+.NET tự restore/build khi cần; lần đầu cần mạng để tải NuGet. Connection string đã có trong `src/LegacyVault.Api/appsettings.Development.json`, không phải nhập lại. Chỉ chạy API bằng một cách để tránh trùng cổng 5000.
 
-Ở Development, API tự tạo database `LegacyVault` nếu chưa có, áp dụng migration và thêm 3 tài khoản demo khi bảng `Users` chưa có dữ liệu. Mật khẩu chung là `Password123!`:
+| Địa chỉ | Kết quả |
+|---|---|
+| `http://localhost:5000/swagger` | Giao diện tài liệu API |
+| `http://localhost:5000/openapi/v1.json` | OpenAPI JSON |
+| `http://localhost:5000/health/live` | 200 Healthy khi API hoạt động |
+| `http://localhost:5000/health/ready` | 200 Healthy khi kết nối được database; 503 khi không kết nối được |
 
-| Email | Role | Ghi chú |
-| --- | --- | --- |
-| `owner@legacyvault.local` | OWNER | Tài khoản thường |
-| `admin@legacyvault.local` | ADMIN | Tài khoản quản trị |
-| `inactive@legacyvault.local` | OWNER | Bị vô hiệu; đăng nhập nhận 403 |
+Swagger/OpenAPI chỉ mở ở Development. Chưa có login/register trong Swagger là bình thường. Có thể mở `http/health.http` để gửi request hạ tầng.
 
-### 1.5. Kết nối database bằng SSMS
+## 4. Các lần chạy sau và cách dừng
 
-Giữ Docker Desktop và container SQL Server đang chạy, rồi điền trong cửa sổ Connect của SSMS:
+Mở Docker Desktop, chạy lại `docker compose up -d --wait`, rồi chạy API. Dữ liệu nằm trong named volume `legacyvault-starter_sql-data`; không phải tạo lại password/database.
 
-| Trường | Giá trị |
-| --- | --- |
-| Server Name | `127.0.0.1,14330` |
-| Authentication | SQL Server Authentication |
-| User Name | `sa` |
-| Password | `LegacyVault_Dev123!` |
-| Database Name | `LegacyVault`, hoặc giữ mặc định rồi chọn database sau khi kết nối |
-| Encrypt | Mandatory |
-| Trust Server Certificate | Tích chọn (cấu hình Development) |
-
-Mật khẩu này chỉ dùng cho database Development của project. Nếu API chưa chạy lần đầu, database `LegacyVault` có thể chưa tồn tại; giữ Database Name mặc định để kết nối SQL Server trước.
-
-Connection string Development:
-
-```text
-Server=127.0.0.1,14330;Database=LegacyVault;User Id=sa;Password=LegacyVault_Dev123!;TrustServerCertificate=True
-```
-
-### 1.6. Test API bằng Swagger hoặc file HTTP
-
-- [Swagger UI](http://localhost:5000/swagger): xem endpoint và gọi thử bằng **Try it out** → **Execute**.
-- [OpenAPI JSON](http://localhost:5000/openapi/v1.json): tài liệu mô tả API.
-- OpenAPI và Swagger UI chỉ được bật trong môi trường Development.
-
-Gọi `POST /api/v1/auth/login` với body:
-
-```json
-{
-  "email": "owner@legacyvault.local",
-  "password": "Password123!",
-  "rememberMe": true
-}
-```
-
-Sau đó test theo thứ tự:
-
-| Request | Kết quả mong đợi |
-| --- | --- |
-| `POST /api/v1/auth/login` | 200, nhận cookie đăng nhập |
-| `GET /api/v1/auth/session` | 200, thông tin người dùng |
-| `POST /api/v1/auth/refresh` | 200, cookie mới |
-| `POST /api/v1/auth/logout` | 204 |
-| `GET /api/v1/auth/session` sau logout | 401 |
-
-Token được trả qua cookie HttpOnly, không nằm trong JSON. Trình duyệt gửi cookie cho các request API cùng host; không cần dán Bearer token. Khi test, dùng nhất quán host `localhost` cho API.
-
-Có thể mở `http/auth.http` bằng VS Code có extension REST Client, Rider hoặc Visual Studio rồi gửi từng request. Công cụ test cần lưu/gửi cookie giữa các request. Nếu dùng frontend, API đang cho phép origin `http://localhost:5173` và frontend cần gửi cookie (`withCredentials: true`). Frontend được chạy từ project frontend riêng.
-
-### 1.7. Mỗi lần mở project và sau khi pull bản mới
-
-Mỗi lần làm việc:
-
-1. Mở Docker Desktop, đợi Docker sẵn sàng.
-2. Chạy `docker compose up -d` tại thư mục project.
-3. Chạy `LegacyVault.Api` với profile `http` bằng Visual Studio hoặc terminal.
-
-Không cần tạo lại khóa JWT hay migration khi mở project. Khi nghỉ, dừng API và có thể dừng SQL Server bằng:
+Dừng API bằng Stop của IDE hoặc Ctrl+C. Dừng SQL:
 
 ```powershell
 docker compose stop
 ```
 
-Lần sau dùng `docker compose up -d` để chạy lại. Dữ liệu được lưu trong volume `legacyvault-sql-data` và được giữ khi dừng hoặc tạo lại container. Lệnh `docker compose down -v` xóa volume và dữ liệu database; chỉ dùng khi muốn xóa dữ liệu Development.
+`docker compose down` cũng giữ named volume. **Không thêm -v nếu cần giữ dữ liệu.**
 
-Nếu đang dùng bản cũ với cổng `1433`, sau khi lấy code mới hãy chạy lại `docker compose up -d` để cập nhật container sang cổng máy `14330`, rồi build/chạy API. SSMS cũng cần đổi Server Name sang `127.0.0.1,14330`. Nếu có connection string riêng trong user-secrets hoặc biến môi trường, cập nhật cấu hình riêng đó vì nó có thể ghi đè cấu hình trong file.
+## 5. Cấu hình và chuyển từ bản setup cũ
 
-### 1.8. Khi thay đổi cấu trúc database
+| File | Vai trò |
+|---|---|
+| `docker-compose.yml` | SQL, cổng 14331, password mẫu, volume, tự tạo database và health check |
+| `appsettings.Development.json` | Connection string khớp Docker, origin FE localhost:5173 |
+| `appsettings.json` | Logging/cấu hình chung; không chứa password server triển khai |
+| `launchSettings.json` | Profile http, môi trường Development, API cổng 5000 |
+| `global.json` | SDK nhóm dùng |
+| `Directory.Packages.props` | Phiên bản NuGet tập trung |
 
-Chỉ người thêm hoặc sửa entity/cấu hình bảng mới cần tạo migration mới. Cài công cụ EF Core phiên bản tương ứng project nếu chưa có:
+Compose dùng tên project `legacyvault-starter` để không phụ thuộc tên thư mục clone. Cổng 14331 tránh SQL 14330 của project cũ. Không chạy hai checkout với cùng project/cổng cùng lúc.
+
+Nếu từng chạy script setup bản trước:
+
+- Máy đang dùng `LegacyVault12345!` chỉ cần chạy lại Compose; giữ nguyên volume/dữ liệu.
+- Đã bỏ UserSecretsId nên API không tự nạp user-secrets cũ; không cần xóa kho secrets trên máy.
+- `.env` cũ không còn cung cấp port/password. Nếu có `COMPOSE_PROJECT_NAME` khác `legacyvault-starter`, kiểm tra project/volume đang dùng trước khi đổi.
+- Biến môi trường `ConnectionStrings__Default` có thể ghi đè appsettings; bỏ biến nếu đang trỏ nhầm database.
+- Volume đã có password tự sinh khác sẽ **không tự đổi password trong SQL**. Dùng kết nối/password cũ để đổi login sa, hoặc giữ password cũ đồng bộ trong Compose và appsettings.Development.json. Không xóa volume khi cần giữ dữ liệu.
+
+Cần **Docker Compose 2.30 trở lên** để hỗ trợ `post_start` tự tạo database. Docker Desktop mới đã kèm Compose; nếu báo không hỗ trợ hãy cập nhật Docker Desktop. Hook có retry chờ SQL; không tạo bảng nghiệp vụ và không chạy migration.
+
+## 6. Cấu trúc code
+
+```text
+src/
+├── LegacyVault.Api/
+│   ├── Controllers/          # Nhận request, gọi service, trả HTTP
+│   ├── Config/               # HTTP, CORS, OpenAPI
+│   ├── Exceptions/           # Xử lý lỗi HTTP tập trung
+│   ├── Security/             # Cookie, HTTP context security
+│   └── Program.cs            # DI, middleware, endpoint
+├── LegacyVault.Application/
+│   ├── Dtos/Requests/        # Dữ liệu đầu vào
+│   ├── Dtos/Responses/       # Dữ liệu trả ra
+│   ├── Services/             # Interface/class nghiệp vụ
+│   ├── Repositories/         # Interface đọc/ghi dữ liệu
+│   ├── Notifications/        # Interface thông báo, gửi email
+│   ├── Exceptions/           # Lỗi nghiệp vụ
+│   └── ApplicationConfig.cs
+├── LegacyVault.Domain/
+│   ├── Entities/             # Đối tượng nghiệp vụ
+│   └── Enums/                # Trạng thái, giá trị nghiệp vụ
+└── LegacyVault.Infrastructure/
+    ├── Data/AppDbContext.cs
+    ├── Data/Configurations/  # EF mapping theo entity
+    ├── Data/Migrations/      # Lịch sử schema
+    ├── Repositories/         # Truy vấn EF Core
+    ├── Security/             # Hash mật khẩu Argon2, JWT token
+    ├── Notifications/        # Triển khai email dev, app URL provider
+    ├── Health/               # Kiểm tra SQL
+    └── InfrastructureConfig.cs
+```
+
+Thư mục trống dùng `.gitkeep` để Git lưu được. Khi có code thật có thể bỏ file đó.
+
+Ví dụ thêm Vault (các file minh họa chưa có):
+
+| Phần việc | Nơi đặt |
+|---|---|
+| VaultsController.cs | Api/Controllers |
+| IVaultService.cs, VaultService.cs | Application/Services |
+| CreateVaultRequest.cs, VaultResponse.cs | Application/Dtos/Requests và Responses |
+| IVaultRepository.cs | Application/Repositories |
+| Vault.cs | Domain/Entities |
+| VaultRepository.cs | Infrastructure/Repositories |
+| VaultConfiguration.cs | Infrastructure/Data/Configurations |
+| DbSet<Vault> | AppDbContext |
+| Đăng ký service/repository | ApplicationConfig / InfrastructureConfig |
+
+Controller điều phối HTTP; service kiểm tra nghiệp vụ/quyền; repository truy vấn dữ liệu. Application không tham chiếu EF Core; Domain không phụ thuộc API/database. Có thể chia feature lớn cho nhiều người theo [CONTRIBUTING.md](CONTRIBUTING.md). Xem thêm [kiến trúc](docs/architecture.md).
+
+## 7. Migration khi bắt đầu có entity
+
+Docker chỉ tạo database trống. **Không tạo InitialCreate khi chưa có entity.** Người thêm entity/mapping tạo migration:
 
 ```powershell
-dotnet tool install --global dotnet-ef --version 10.0.0
+dotnet tool restore
+dotnet ef migrations add AddVaults --project src/LegacyVault.Infrastructure --startup-project src/LegacyVault.Api --output-dir Data/Migrations -- --environment Development
+dotnet ef database update --project src/LegacyVault.Infrastructure --startup-project src/LegacyVault.Api -- --environment Development
 ```
 
-Ví dụ tạo migration cho một thay đổi mới (đổi `AddNewFeature` thành tên phù hợp):
+Commit migration/model snapshot cùng code. Người khác pull rồi chạy `database update`, không tạo lại cùng migration. Tham số Development giúp EF đọc connection string có sẵn. API không tự migrate khi khởi động; server triển khai cần quy trình migration riêng.
+
+## 8. Kiểm thử
 
 ```powershell
-dotnet ef migrations add AddNewFeature --project src/LegacyVault.Infrastructure --startup-project src/LegacyVault.Api --output-dir Persistence/Migrations
+dotnet test LegacyVault.sln
 ```
 
-Commit các file migration và model snapshot cùng thay đổi entity. Các thành viên khác pull migration đã tạo, rồi chạy API Development để áp dụng; không tạo lại migration cùng tên trên mỗi máy.
+Test HTTP kiểm tra liveness khi SQL lỗi, readiness 503, OpenAPI và lỗi 404. Test SQL thật chỉ chạy khi có `LEGACYVAULT_TEST_CONNECTION`; chưa đặt thì hiển thị Skipped.
 
-### 1.9. Lỗi hay gặp
+Chỉ khi muốn chạy thêm test SQL thật, sau khi Docker healthy:
 
-- `docker-credential-desktop` không tìm thấy trong PATH hoặc terminal không nhận lệnh `docker`: đóng hẳn terminal/Visual Studio rồi mở lại để nhận PATH sau khi cài Docker; kiểm tra bằng `Get-Command docker` và `Get-Command docker-credential-desktop`.
-- Docker không kết nối được Engine: mở Docker Desktop và đợi Engine sẵn sàng.
-- Cổng `14330` đã bị chiếm: chọn cổng máy còn trống trong `docker-compose.yml` và sửa connection string Development cho khớp, sau đó chạy lại `docker compose up -d`.
-- `Jwt:SigningKey phải dài ít nhất 32 ký tự`: cấu hình user-secrets theo mục 1.3.
-- `No migrations were found`: kiểm tra đã lấy đầy đủ thư mục migrations; dừng API, **Build → Rebuild Solution**, rồi chạy lại. Source hiện đã có `InitialCreate`.
-- `pending changes ... Add a new migration`: model có thay đổi chưa được ghi vào migration; kiểm tra thay đổi entity và tạo migration mới theo mục 1.8.
-- `Login failed for user 'sa'`: kiểm tra đúng server `127.0.0.1,14330` và mật khẩu đã dùng khi khởi tạo SQL Server. Kiểm tra connection string riêng trong user-secrets/biến môi trường nếu có.
-- Lỗi kết nối SQL hoặc cửa sổ API chờ lâu trước khi hiện `Now listening`: kiểm tra `docker compose ps`, log SQL Server và connection string. API chờ khởi tạo database trước khi bắt đầu nhận request.
-- API báo cổng `5000` đã được dùng: dừng phiên API cũ trước khi chạy bằng Visual Studio hoặc terminal.
-
----
-
-## 2. Cấu trúc
-
-```
-legacyvault-be/
-├── Directory.Build.props        Cấu hình chung cho mọi project (.NET 10, nullable)
-├── Directory.Packages.props     Version NuGet khai báo một chỗ
-├── docker-compose.yml           SQL Server cho dev
-├── http/auth.http               Kịch bản thử API bằng tay
-└── src/
-    ├── LegacyVault.Domain/              ① LÕI — không phụ thuộc gì
-    │   ├── Common/                      Entity, Result, Error
-    │   └── Identity/                    User, RefreshToken, UserRole, UserStatus
-    ├── LegacyVault.Application/         ② USE CASE — chỉ biết Domain + interface
-    │   ├── Common/Interfaces/           IAppDbContext, IPasswordHasher, ITokenService, ICurrentUser
-    │   ├── Features/Identity/           AuthService, AuthDtos, AuthErrors
-    │   └── DependencyInjection.cs
-    ├── LegacyVault.Infrastructure/      ③ CÀI ĐẶT THẬT cho các interface
-    │   ├── Persistence/                 AppDbContext, Configurations/, DbInitializer
-    │   ├── Security/                    Argon2PasswordHasher, JwtTokenService, CurrentUser
-    │   └── DependencyInjection.cs       Đăng ký DB, JWT
-    └── LegacyVault.Api/                 ④ HTTP — controller mỏng, lắp ráp mọi thứ
-        ├── Common/                      ApiControllerBase, ApiResponse, AuthCookieWriter, GlobalExceptionHandler
-        ├── Controllers/V1/              AuthController
-        ├── Extensions/                  Controller, CORS, chuẩn lỗi
-        └── Program.cs
+```powershell
+$devSettings = Get-Content src/LegacyVault.Api/appsettings.Development.json -Raw | ConvertFrom-Json
+$env:LEGACYVAULT_TEST_CONNECTION = $devSettings.ConnectionStrings.Default
+try {
+    dotnet test LegacyVault.sln
+} finally {
+    Remove-Item Env:LEGACYVAULT_TEST_CONNECTION -ErrorAction SilentlyContinue
+}
 ```
 
-**Chiều phụ thuộc** (mũi tên = "biết đến"):
+Biến trên chỉ phục vụ kiểm thử tự động, không bắt buộc để chạy SQL/API. GitHub Actions chạy cùng Compose và cả hai test; workflow mới cần được push để xác nhận trên GitHub.
 
-```
-Api ──► Application ──► Domain
- │           ▲
- └──► Infrastructure
-```
+## 9. Lỗi thường gặp
 
-Quy tắc duy nhất cần nhớ: **lớp trong không bao giờ biết lớp ngoài.**
-- Domain không biết có database hay HTTP. `User.RegisterFailedLogin()` chỉ là C# thuần — test được không cần gì.
-- Application cần lưu dữ liệu nhưng chỉ biết `IAppDbContext` (interface). Không biết đó là SQL Server.
-- Infrastructure cài đặt interface đó bằng EF Core + SQL Server. Đổi sang PostgreSQL chỉ sửa ở đây.
-- Api là nơi duy nhất "lắp" mọi thứ lại (`Program.cs`).
+| Lỗi | Cách xử lý |
+|---|---|
+| Không kết nối Docker Engine | Mở Docker Desktop, đợi Linux Engine sẵn sàng |
+| Compose không hiểu post_start | Cập nhật Docker Desktop/Compose 2.30 trở lên |
+| SQL không healthy | Xem `docker compose logs --tail 50 sqlserver`; kiểm tra RAM và password volume cũ |
+| Cổng 14331 bị chiếm | Dừng SQL khác chiếm cổng hoặc đổi cổng Compose và connection string API cùng nhau |
+| SSMS lỗi chứng chỉ | Bật Trust server certificate cho kết nối dev |
+| API thiếu SDK | Cài SDK theo global.json, dùng IDE hỗ trợ SDK |
+| API thiếu connection string | Chọn profile http/Development |
+| Health ready trả 503 | Chờ Docker healthy, kiểm tra password/database/cấu hình ghi đè |
+| Cổng API 5000 bị chiếm | Dừng API cũ hoặc đổi profile và URL test |
+| Swagger chưa có login/register | Bộ khung chưa triển khai auth |
 
-Muốn biết một dòng code nên đặt ở đâu? Hỏi: *"Nó là luật nghiệp vụ, là điều phối, là chi tiết kỹ thuật, hay là chuyện HTTP?"* → Domain / Application / Infrastructure / Api.
+## 10. Git và trạng thái chức năng
 
----
+Repo chính thức: [FPT-SWP391-SE2040-GROUP02/Backend](https://github.com/FPT-SWP391-SE2040-GROUP02/Backend).
 
-## 3. Lần theo một request đăng nhập
+Đọc [Hướng dẫn Git](docs/HUONG-DAN-GIT.md): tạo nhánh từ develop → code → kiểm tra → commit → push → PR về develop. Nhóm chốt bản ổn định mới mở PR về main. Không chạy lại git init sau khi clone.
 
-Mở từng file theo thứ tự dưới đây khi đọc:
+Đã có: bốn project, DI, SQL Docker tự tạo database, EF Core, CORS, ProblemDetails, Swagger, health check và cấu hình CI.
 
-```
-FE: POST /api/v1/auth/login { email, password, rememberMe }
- │
- ├─ Program.cs ............... CORS → Authentication → Authorization → Controller
- │
- ├─ AuthController.Login ..... [ApiController] đã tự kiểm tra [Required], [EmailAddress]
- │                             trong LoginRequest. Sai → 400 VALIDATION_ERROR, không vào tới đây.
- │
- ├─ AuthService.LoginAsync
- │    1. Tìm user theo email đã chuẩn hóa          (EF → SELECT … WHERE Email = @p)
- │    2. Hỏi entity: user.IsLockedOut(now)?       → 423 ACCOUNT_LOCKED
- │    3. passwordHasher.Verify(...)  sai?         → user.RegisterFailedLogin(now) → 401 + attemptsRemaining
- │    4. user.Status != Active?                    → 403 ACCOUNT_NOT_ACTIVE
- │    5. user.RegisterSuccessfulLogin(now)
- │    6. Tạo access token (JWT 15') + refresh token (7 ngày, lưu HASH vào DB)
- │    7. SaveChangesAsync() — MỘT lần cho mọi thay đổi
- │    → trả Result<AuthResult>
- │
- ├─ AuthController ........... Thất bại → Fail(error) → ProblemDetails
- │                             Thành công → AuthCookieWriter ghi 2 cookie HttpOnly
- │
- └─ Response 200 { "data": { userId, expiresIn, user } } + Set-Cookie: lv_access, lv_refresh
+Đã có thêm: đăng ký/xác minh email, đăng nhập email/mật khẩu (JWT + refresh cookie), đăng nhập Google; tạo/xem/sửa kho; tạo/xem tài sản mã hóa (tệp, chữ); gói: tạo/xem/đổi tên/lưu trữ, thêm/gỡ tài sản trong gói; điểm danh định kỳ (deadman switch) với job nền chuyển trạng thái và nhắc hạn — xem docs/api-contract.md mục 6. Email xác minh tài khoản và lời nhắc điểm danh gửi thật qua Gmail (MailKit) khi có cấu hình `Email:Smtp` — xem mục 11; chưa cấu hình thì chỉ ghi log. Lưu trữ gói READY cuối cùng (kế hoạch về nháp) cũng dừng lịch điểm danh.
+
+Nội dung tài sản được **mã hóa envelope** trước khi ghi đĩa: AES-256-GCM, mỗi phiên bản một DEK riêng, DEK được bọc bằng KEK trong mục `AssetEncryption` của cấu hình (không nằm trong DB). `appsettings.Development.json` có sẵn KEK mẫu `dev-local` — **chỉ dùng local**, giống mật khẩu SQL mẫu. Server thật đặt KEK qua biến môi trường `AssetEncryption__ActiveKeyId` và `AssetEncryption__Keys__<id>`; thiếu/sai KEK thì API không khởi động. Đổi KEK: thêm khóa mới, chuyển `ActiveKeyId`, **giữ khóa cũ** để mở các phiên bản đã lưu. Mất KEK = mất toàn bộ nội dung đã lưu.
+
+Database dev đã chạy các migration cũ (`InitialSchema`, `AddAssetVersionEncryption`, đã bỏ khi gộp với develop) thì xóa database rồi tạo lại theo migration hiện tại:
+
+```powershell
+dotnet ef database drop --force --project src/LegacyVault.Infrastructure --startup-project src/LegacyVault.Api -- --environment Development
+dotnet ef database update --project src/LegacyVault.Infrastructure --startup-project src/LegacyVault.Api -- --environment Development
 ```
 
-Các request sau đó: trình duyệt tự gửi cookie `lv_access` → JwtBearer (cấu hình ở `Infrastructure/DependencyInjection.cs`) đọc cookie, kiểm tra chữ ký + hạn → điền `HttpContext.User` → `CurrentUser.UserId` đọc ra.
+Nhớ xóa luôn thư mục `src/LegacyVault.Api/App_Data/asset-content` vì nội dung trong đó không còn bản ghi tương ứng.
 
-### Vì sao trả `Result` thay vì `throw`?
+Chưa có: tài khoản demo, chỉ định người nhận (gói hiện luôn DRAFT), tải về/sửa/xóa nội dung tài sản, eKYC, thanh toán, kích hoạt kế hoạch (nối điểm danh), Executor, chứng tử, video/bàn giao, Admin/audit/jobs. Xem [backlog](docs/backlog.md); chạy được môi trường không đồng nghĩa hoàn thành SRS.
 
-Sai mật khẩu là chuyện **bình thường**, xảy ra hàng ngày. Exception dành cho chuyện **bất thường** (mất kết nối DB). `Result` buộc người gọi xử lý cả hai nhánh, và chữ ký method nói rõ "có thể thất bại". Exception thật sự bất ngờ thì `GlobalExceptionHandler` bắt hết và trả 500.
+## 11. Gửi email thật bằng Gmail (MailKit SMTP)
 
----
+Dịch vụ email dùng chung cho email xác minh tài khoản và lời nhắc điểm danh. **Chưa cấu hình thì hệ thống chỉ ghi log, không gửi email** (dev và test vẫn chạy bình thường).
 
-## 4. Xác thực hoạt động thế nào
+1. Tài khoản Gmail dùng để gửi cần bật **Xác minh 2 bước**, rồi tạo **Mật khẩu ứng dụng** tại <https://myaccount.google.com/apppasswords> (16 ký tự). Gmail không cho dùng mật khẩu đăng nhập thường.
+2. Đặt bí mật **bằng user-secrets** (chỉ nằm trên máy bạn, không vào Git):
 
-| | Access token | Refresh token |
-| --- | --- | --- |
-| Là gì | JWT có chữ ký | Chuỗi ngẫu nhiên 64 byte |
-| Sống | 15 phút | 7 ngày |
-| Lưu ở server | Không | Có (chỉ lưu SHA-256) |
-| Cookie | `lv_access`, path `/api` | `lv_refresh`, path `/api/v1/auth` |
-| Thu hồi được? | Không (tự hết hạn) | Có — đó là cách đăng xuất |
+```powershell
+dotnet user-secrets set "Email:Smtp:UserName" "ten-ban@gmail.com" --project src/LegacyVault.Api
+dotnet user-secrets set "Email:Smtp:Password" "mat-khau-ung-dung-16-ky-tu" --project src/LegacyVault.Api
+```
 
-**Vì sao cookie HttpOnly mà không để FE giữ token?** JavaScript không đọc được cookie HttpOnly, nên nếu trang bị chèn mã độc (XSS), mã đó cũng không lấy được token. FE của nhóm đã thiết kế theo hướng này (`withCredentials: true`, không đọc token).
+3. Khởi động lại API. Thử bằng cách đăng ký một tài khoản bằng email thật: email xác minh sẽ tới hộp thư.
 
-**Xoay vòng refresh token:** mỗi lần `/auth/refresh`, token cũ bị thu hồi và thay bằng token mới. Nếu ai đó dùng lại token cũ — dấu hiệu bị đánh cắp — cả chuỗi phiên đó bị thu hồi. Bạn có thể tự thử: lưu cookie trước khi refresh, refresh, rồi gửi lại cookie cũ → 401, và cookie mới cũng chết theo.
+Server thật đặt biến môi trường `Email__Smtp__UserName` và `Email__Smtp__Password` (không viết vào `appsettings.json`, không commit). Các giá trị không bí mật (`Host`, `Port`, `SecureSocket`, `FromName`, `FromAddress`) nằm ở mục `Email:Smtp` của `appsettings.json`. Gmail chỉ cho gửi từ chính tài khoản đã đăng nhập (hoặc bí danh đã xác minh), nên để trống `FromAddress`. Cấu hình sai (cổng, `SecureSocket`, địa chỉ gửi) thì API không khởi động. Gmail giới hạn khoảng 500 thư/ngày cho tài khoản thường.
 
-**Giới hạn cần biết:** sau khi đăng xuất, access token cũ (nếu ai đó đã chép được) vẫn dùng được tối đa 15 phút vì server không lưu nó. Đó là lý do nó phải sống ngắn.
-
-**Các biện pháp nhỏ đã có:** băm mật khẩu Argon2id; khóa 15 phút sau 5 lần sai; email không tồn tại vẫn chạy băm để không lộ qua thời gian phản hồi; kiểm tra trạng thái tài khoản *sau* khi mật khẩu đúng; so sánh hash thời gian cố định; khóa JWT nằm trong user-secrets.
-
----
-
-## 5. Hợp đồng API
-
-Thành công: `{ "data": … }`. Lỗi: ProblemDetails có `code`.
-
-| Method | URL | Quyền | Kết quả |
-| --- | --- | --- | --- |
-| POST | `/api/v1/auth/login` | Ai cũng gọi được | 200 `{ data: { userId, expiresIn, user } }` + cookie |
-| GET | `/api/v1/auth/session` | Cần đăng nhập | 200 `{ data: { user } }` / 401 |
-| POST | `/api/v1/auth/refresh` | Cookie refresh | 200 như login + cookie mới / 401 `SESSION_EXPIRED` |
-| POST | `/api/v1/auth/logout` | Ai cũng gọi được | 204, xóa cookie. Body tùy chọn `{ "revokeAllDevices": true }` |
-
-| HTTP | `code` | Khi nào | Trường thêm |
-| --- | --- | --- | --- |
-| 400 | `VALIDATION_ERROR` | Thiếu/sai định dạng | `errors: { email: [...] }` |
-| 401 | `INVALID_CREDENTIALS` | Sai email/mật khẩu | `attemptsRemaining` (chỉ khi email tồn tại) |
-| 423 | `ACCOUNT_LOCKED` | Sai 5 lần | `attemptsRemaining: 0`, `remainingSeconds` |
-| 403 | `ACCOUNT_NOT_ACTIVE` | Tài khoản bị vô hiệu | |
-| 401 | `SESSION_EXPIRED` | Refresh token hết hạn/bị thu hồi | |
-| 500 | `INTERNAL_ERROR` | Lỗi bất ngờ (xem log theo `traceId`) | |
-
-### Ghi chú cho FE
-
-1. `AuthSession` trong `auth.types.ts` khai báo `accessToken`, `refreshToken` bắt buộc — BE cố ý không trả hai trường này (đã nằm trong cookie). Nên đổi thành tùy chọn hoặc xóa.
-2. Access token hết sau 15 phút. FE cần thêm vào response interceptor của axios: gặp 401 → gọi `POST /auth/refresh` một lần → thử lại request; refresh cũng 401 → về trang đăng nhập. Không có bước này, F5 sau 15 phút sẽ bị đăng xuất.
-3. FE dùng role `NOTARY`, tài liệu kiến trúc dùng `VERIFIER`. BE đang theo tài liệu (`OWNER`, `VERIFIER`, `ADMIN`) — nhóm cần chốt một tên.
-
----
-
-## 6. Học tiếp: tự làm theo khuôn
-
-Mỗi tính năng mới đi đúng 6 bước (giống mục 7 tài liệu kiến trúc). Thử tự làm theo thứ tự, mỗi bài dựa trên bài trước:
-
-**Bài 1 — Đăng ký (`POST /api/v1/auth/register`)**
-FE đã có `RegisterRequest`. Gợi ý: thêm `RegisterRequest` vào `AuthDtos.cs` (kèm `[Compare]` cho `confirmPassword`), thêm `AuthErrors.EmailAlreadyExists` (409), thêm `RegisterAsync` vào `AuthService` dùng `User.Create(..., UserStatus.Pending, ...)`. Không cần migration mới vì bảng không đổi. Câu hỏi để tự nghĩ: nếu hai người đăng ký cùng email cùng lúc, cái gì chặn lại? (Gợi ý: xem `UserConfiguration`.)
-
-**Bài 2 — Unit test cho Domain**
-Tạo project `tests/LegacyVault.UnitTests` (xUnit), viết test cho `User.RegisterFailedLogin`: sai 4 lần còn 1 lượt; lần 5 bị khóa; sau 15 phút được thử lại. Domain không phụ thuộc gì nên test chỉ là `new` và `Assert`.
-
-**Bài 3 — Phân quyền theo role**
-Tạo `AdminController` với một endpoint `[Authorize(Roles = "ADMIN")]`. Đăng nhập bằng owner → 403; bằng admin → 200. Đọc lại `RoleClaimType` trong `Infrastructure/DependencyInjection.cs` để hiểu vì sao nó chạy.
-
-**Bài 4 — Module đầu tiên có bảng mới**
-Đây là lúc đi đủ 6 bước, kể cả `dotnet ef migrations add`: entity trong `Domain/<Module>/`, `<X>Configuration.cs`, thêm `DbSet` vào `IAppDbContext` và `AppDbContext`, service + DTO + errors, controller, migration.
-
-Các phần còn lại của bảo mật (TOTP cho Admin, đăng nhập Google, rate limit) làm sau khi đã quen khuôn.
